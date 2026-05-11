@@ -9,7 +9,8 @@ description: >-
 inputs:
   signing-key:
     description: >-
-      Base64-encoded ed25519 private key (PEM). Pass `${{ secrets.AILERON_SIGNING_KEY }}`.
+      Base64-encoded ed25519 private key (PEM). Pass the value of the
+      AILERON_SIGNING_KEY repo secret from the consuming workflow.
     required: true
   github-token:
     description: "GitHub token with `contents: write` on the publishing repo."
@@ -17,7 +18,7 @@ inputs:
   connector-hash:
     description: >-
       `sha256:<hex>` content hash of the connector tarball this cohort binds to.
-      Pass `${{ steps.<id>.outputs.connector-hash }}` from `sign-and-publish`.
+      Pass the `connector-hash` output of the `sign-and-publish` step.
     required: true
   actions-dir:
     description: Directory holding per-action subdirectories with action.md files.
