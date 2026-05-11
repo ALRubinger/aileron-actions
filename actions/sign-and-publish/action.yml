@@ -1,0 +1,160 @@
+name: Sign and publish connector release
+description: >-
+  Compute the connector content hash (sha256 over `wasm || manifest`), sign
+  the payload with the publisher's ed25519 key, pack a flat tarball, and
+  publish a GitHub release at `vX.Y.Z` whose body cross-links to every
+  per-action release in the cohort.
+
+inputs:
+  signing-key:
+    description: >-
+      Base64-encoded ed25519 private key (PEM). Pass `${{ secrets.AILERON_SIGNING_KEY }}`.
+    required: true
+  github-token:
+    description: "GitHub token with `contents: write` on the publishing repo."
+    required: true
+  connector-wasm:
+    description: Path to the built WASM binary, relative to the workspace root.
+    required: false
+    default: connector.wasm
+  manifest-path:
+    description: Path to the connector manifest, relative to the workspace root.
+    required: false
+    default: connector/manifest.toml
+  actions-dir:
+    description: Directory holding per-action subdirectories (used to build cohort release notes).
+    required: false
+    default: actions
+  version:
+    description: >-
+      Version being released. Defaults to the pushed tag with the leading
+      `v` stripped (e.g. `refs/tags/v1.2.3` -> `1.2.3`).
+    required: false
+    default: ""
+
+outputs:
+  connector-hash:
+    description: Computed connector content hash, formatted `sha256:<hex>`. Pass into `publish-action-subpaths`.
+    value: ${{ steps.hash.outputs.hash }}
+  tag:
+    description: The connector release tag (e.g. `v1.2.3`).
+    value: ${{ steps.resolve.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve version and tag
+      id: resolve
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.version }}" ]; then
+          version="${{ inputs.version }}"
+          tag="v$version"
+        else
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+        fi
+        if [ -z "$version" ] || [ "$version" = "$GITHUB_REF" ]; then
+          echo "::error::could not resolve version: pass `version` input or trigger on a `v*.*.*` tag"
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+    - name: Compute connector content hash
+      id: hash
+      shell: bash
+      env:
+        CONNECTOR_WASM: ${{ inputs.connector-wasm }}
+        MANIFEST_PATH: ${{ inputs.manifest-path }}
+      run: |
+        set -euo pipefail
+        # Hash signs over `binary || manifest`, the canonical-hash input
+        # used by the install pipeline. Producers and consumers must
+        # derive the hash from the same concatenation order.
+        cat "$CONNECTOR_WASM" "$MANIFEST_PATH" > "$RUNNER_TEMP/connector-payload.bin"
+        CONNECTOR_HASH="sha256:$(shasum -a 256 "$RUNNER_TEMP/connector-payload.bin" | awk '{print $1}')"
+        echo "hash=$CONNECTOR_HASH" >> "$GITHUB_OUTPUT"
+        echo "Connector content hash: $CONNECTOR_HASH"
+
+    - name: Decode signing key
+      shell: bash
+      env:
+        AILERON_SIGNING_KEY: ${{ inputs.signing-key }}
+      run: |
+        set -euo pipefail
+        if [ -z "$AILERON_SIGNING_KEY" ]; then
+          echo "::error::signing-key input is empty"
+          exit 1
+        fi
+        umask 077
+        printf '%s' "$AILERON_SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/aileron-signing.key"
+
+    - name: Sign + pack connector tarball
+      shell: bash
+      env:
+        CONNECTOR_WASM: ${{ inputs.connector-wasm }}
+        MANIFEST_PATH: ${{ inputs.manifest-path }}
+      run: |
+        set -euo pipefail
+        # The install pipeline demands a flat archive with exactly three
+        # files at the root: connector.wasm, manifest.toml, signature.sig.
+        # Stage them into a clean directory and tar from there so neither
+        # a directory prefix nor a non-canonical signature filename leaks
+        # into the archive.
+        pack_dir="$RUNNER_TEMP/connector-pack"
+        mkdir -p "$pack_dir"
+        openssl pkeyutl -sign -rawin \
+          -inkey "$RUNNER_TEMP/aileron-signing.key" \
+          -in "$RUNNER_TEMP/connector-payload.bin" \
+          -out "$pack_dir/signature.sig"
+        cp "$CONNECTOR_WASM" "$pack_dir/connector.wasm"
+        cp "$MANIFEST_PATH"  "$pack_dir/manifest.toml"
+        tar czf aileron.tar.gz -C "$pack_dir" \
+          connector.wasm manifest.toml signature.sig
+
+    - name: Publish connector release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        CONNECTOR_HASH: ${{ steps.hash.outputs.hash }}
+        TAG: ${{ steps.resolve.outputs.tag }}
+        VERSION: ${{ steps.resolve.outputs.version }}
+        ACTIONS_DIR: ${{ inputs.actions-dir }}
+      run: |
+        set -euo pipefail
+        base_url="https://github.com/$GITHUB_REPOSITORY/releases/tag"
+
+        # Build connector release notes that link to every per-action
+        # release in this cohort. Tags published by publish-action-subpaths
+        # are predictable (`actions/<name>/v<version>`), so we can
+        # pre-compute their URLs here. Slashes are URL-encoded as %2F per
+        # GitHub's release-tag URL convention.
+        notes_file="$RUNNER_TEMP/connector-notes.md"
+        {
+          echo "Connector release. Content hash: $CONNECTOR_HASH"
+          echo ""
+          if compgen -G "$ACTIONS_DIR"/*/ > /dev/null; then
+            echo "Actions in this cohort (all pinned to this connector hash):"
+            for action_dir in "$ACTIONS_DIR"/*/; do
+              name="$(basename "$action_dir")"
+              action_tag="actions/$name/v$VERSION"
+              escaped="$(printf '%s' "$action_tag" | sed 's|/|%2F|g')"
+              echo "- ${name}: ${base_url}/${escaped}"
+            done
+          fi
+        } > "$notes_file"
+
+        if ! gh release view "$TAG" >/dev/null 2>&1; then
+          gh release create "$TAG" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
+            --notes-file "$notes_file"
+        fi
+        gh release upload "$TAG" aileron.tar.gz --clobber
+
+    - name: Cleanup signing key
+      if: always()
+      shell: bash
+      run: rm -f "$RUNNER_TEMP/aileron-signing.key"

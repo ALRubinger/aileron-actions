@@ -1,0 +1,88 @@
+name: Build WASM connector
+description: >-
+  Substitute the placeholder version into the connector manifest and every
+  action manifest, then compile the connector source to a wasip1 WASM binary.
+
+inputs:
+  connector-dir:
+    description: Directory holding connector source (main.go, manifest.toml, go.mod).
+    required: false
+    default: connector
+  actions-dir:
+    description: Directory holding per-action subdirectories with action.md files.
+    required: false
+    default: actions
+  version:
+    description: >-
+      Version to substitute in place of `0.0.0-dev`. Defaults to the pushed
+      tag with the leading `v` stripped (e.g. `refs/tags/v1.2.3` -> `1.2.3`).
+    required: false
+    default: ""
+  output-path:
+    description: Path to write the built WASM binary, relative to the workspace root.
+    required: false
+    default: connector.wasm
+
+outputs:
+  version:
+    description: The version that was substituted into the manifests.
+    value: ${{ steps.resolve.outputs.version }}
+  connector-wasm:
+    description: Path to the built WASM binary.
+    value: ${{ inputs.output-path }}
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve version
+      id: resolve
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.version }}" ]; then
+          version="${{ inputs.version }}"
+        else
+          # Tag pushes set GITHUB_REF to `refs/tags/vX.Y.Z`.
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+        fi
+        if [ -z "$version" ] || [ "$version" = "$GITHUB_REF" ]; then
+          echo "::error::could not resolve version: pass `version` input or trigger on a `v*.*.*` tag"
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+
+    - name: Substitute placeholder versions in manifests
+      shell: bash
+      env:
+        VERSION: ${{ steps.resolve.outputs.version }}
+        CONNECTOR_DIR: ${{ inputs.connector-dir }}
+        ACTIONS_DIR: ${{ inputs.actions-dir }}
+      run: |
+        set -euo pipefail
+        # Source manifests carry `version = "0.0.0-dev"` as a placeholder so
+        # the publisher never hand-edits a version field. CI swaps it for
+        # the real version derived from the tag.
+        sed -i "s|0\\.0\\.0-dev|$VERSION|g" "$CONNECTOR_DIR/manifest.toml"
+        for action_md in "$ACTIONS_DIR"/*/action.md; do
+          sed -i "s|0\\.0\\.0-dev|$VERSION|g" "$action_md"
+        done
+
+        if grep -l '0\.0\.0-dev' "$CONNECTOR_DIR/manifest.toml" "$ACTIONS_DIR"/*/action.md; then
+          echo "::error::placeholder version still present after substitution"
+          exit 1
+        fi
+        echo "Substituted version $VERSION into all manifests"
+
+    - name: Build connector WASM
+      shell: bash
+      env:
+        GOOS: wasip1
+        GOARCH: wasm
+        CONNECTOR_DIR: ${{ inputs.connector-dir }}
+        OUTPUT_PATH: ${{ inputs.output-path }}
+      run: |
+        set -euo pipefail
+        cd "$CONNECTOR_DIR"
+        go build -trimpath -ldflags="-s -w" -o "$GITHUB_WORKSPACE/$OUTPUT_PATH" .
+        echo "Built WASM connector: $OUTPUT_PATH"

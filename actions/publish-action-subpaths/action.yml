@@ -1,0 +1,161 @@
+name: Publish per-action subpath releases
+description: >-
+  For each subdirectory under the actions root, substitute the
+  `sha256:bound-at-release` placeholder in `action.md` with the real
+  connector hash, sign the manifest, pack a flat tarball, and publish a
+  GitHub release at `actions/<name>/vX.Y.Z` (prerelease) with notes that
+  cross-link to the connector release and to every sibling action.
+
+inputs:
+  signing-key:
+    description: >-
+      Base64-encoded ed25519 private key (PEM). Pass `${{ secrets.AILERON_SIGNING_KEY }}`.
+    required: true
+  github-token:
+    description: "GitHub token with `contents: write` on the publishing repo."
+    required: true
+  connector-hash:
+    description: >-
+      `sha256:<hex>` content hash of the connector tarball this cohort binds to.
+      Pass `${{ steps.<id>.outputs.connector-hash }}` from `sign-and-publish`.
+    required: true
+  actions-dir:
+    description: Directory holding per-action subdirectories with action.md files.
+    required: false
+    default: actions
+  version:
+    description: >-
+      Version being released. Defaults to the pushed tag with the leading
+      `v` stripped (e.g. `refs/tags/v1.2.3` -> `1.2.3`).
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve version and tag
+      id: resolve
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [ -n "${{ inputs.version }}" ]; then
+          version="${{ inputs.version }}"
+          tag="v$version"
+        else
+          tag="${GITHUB_REF#refs/tags/}"
+          version="${tag#v}"
+        fi
+        if [ -z "$version" ] || [ "$version" = "$GITHUB_REF" ]; then
+          echo "::error::could not resolve version: pass `version` input or trigger on a `v*.*.*` tag"
+          exit 1
+        fi
+        echo "version=$version" >> "$GITHUB_OUTPUT"
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+    - name: Decode signing key
+      shell: bash
+      env:
+        AILERON_SIGNING_KEY: ${{ inputs.signing-key }}
+      run: |
+        set -euo pipefail
+        if [ -z "$AILERON_SIGNING_KEY" ]; then
+          echo "::error::signing-key input is empty"
+          exit 1
+        fi
+        umask 077
+        printf '%s' "$AILERON_SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/aileron-signing.key"
+
+    - name: Substitute, sign, pack, and publish each action
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        CONNECTOR_HASH: ${{ inputs.connector-hash }}
+        ACTIONS_DIR: ${{ inputs.actions-dir }}
+        CONNECTOR_TAG: ${{ steps.resolve.outputs.tag }}
+        VERSION: ${{ steps.resolve.outputs.version }}
+      run: |
+        set -euo pipefail
+        base_url="https://github.com/$GITHUB_REPOSITORY/releases/tag"
+        connector_url="${base_url}/${CONNECTOR_TAG}"
+        build_root="$RUNNER_TEMP/action-build"
+        mkdir -p "$build_root"
+
+        # Pre-compute the action list once so each action's release notes
+        # can list its siblings.
+        if ! compgen -G "$ACTIONS_DIR"/*/ > /dev/null; then
+          echo "::warning::no action subdirectories under $ACTIONS_DIR — nothing to publish"
+          exit 0
+        fi
+        action_names=$(for d in "$ACTIONS_DIR"/*/; do basename "$d"; done | sort)
+
+        for name in $action_names; do
+          action_tag="actions/$name/v$VERSION"
+          action_dir="$ACTIONS_DIR/$name"
+          staged="$build_root/$name"
+          mkdir -p "$staged"
+
+          # Substitute the placeholder with the real connector hash. The
+          # committed source retains `sha256:bound-at-release` so the next
+          # release runs the same substitution against an unchanged
+          # template — no follow-up commit needed.
+          sed "s|sha256:bound-at-release|$CONNECTOR_HASH|g" \
+            "$action_dir/action.md" > "$staged/action.md"
+
+          if grep -q "sha256:bound-at-release" "$staged/action.md"; then
+            echo "::error file=$action_dir/action.md::placeholder still present after substitution"
+            exit 1
+          fi
+
+          # Sign the substituted manifest so the install pipeline can
+          # verify it against the publisher's keyring entry. Signature
+          # filename is fixed at `signature.sig` by the tarball convention.
+          openssl pkeyutl -sign -rawin \
+            -inkey "$RUNNER_TEMP/aileron-signing.key" \
+            -in "$staged/action.md" \
+            -out "$staged/signature.sig"
+
+          # Asset name is always `aileron.tar.gz` — the install resolver
+          # hard-codes the name regardless of whether the tag points at a
+          # connector or an action release.
+          tar czf "$staged/aileron.tar.gz" -C "$staged" action.md signature.sig
+
+          # Cross-linked release notes pointing back to the connector and
+          # to every sibling action in the cohort. The current action is
+          # marked "(this release)" so the reader can orient.
+          notes_file="$staged/notes.md"
+          {
+            echo "Action release. Pinned to connector $CONNECTOR_HASH."
+            echo ""
+            echo "Cohort: $CONNECTOR_TAG — $connector_url"
+            echo ""
+            echo "Sibling actions:"
+            for sibling in $action_names; do
+              if [ "$sibling" = "$name" ]; then
+                echo "- ${sibling} (this release)"
+              else
+                sibling_tag="actions/$sibling/v$VERSION"
+                sibling_escaped="$(printf '%s' "$sibling_tag" | sed 's|/|%2F|g')"
+                echo "- ${sibling}: ${base_url}/${sibling_escaped}"
+              fi
+            done
+          } > "$notes_file"
+
+          # --prerelease keeps the connector release as GitHub's "Latest";
+          # per-action releases are sibling artifacts in the same cohort,
+          # not a successor release stream.
+          if ! gh release view "$action_tag" >/dev/null 2>&1; then
+            gh release create "$action_tag" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "$action_tag" \
+              --notes-file "$notes_file"
+          fi
+          gh release upload "$action_tag" "$staged/aileron.tar.gz" --clobber
+
+          echo "::notice::Published $action_tag"
+        done
+
+    - name: Cleanup signing key
+      if: always()
+      shell: bash
+      run: rm -f "$RUNNER_TEMP/aileron-signing.key"

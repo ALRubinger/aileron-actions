@@ -1,0 +1,17 @@
+name: Set up Go for WASM connector build
+description: >-
+  Install the Go toolchain pinned to the connector's go.mod so subsequent
+  steps can build a wasip1 WASM connector.
+
+inputs:
+  go-version-file:
+    description: Path to go.mod (or go.work) to pin the Go toolchain version.
+    required: false
+    default: connector/go.mod
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v6
+      with:
+        go-version-file: ${{ inputs.go-version-file }}
