@@ -23,7 +23,7 @@ None.
 
 ```yaml
 - uses: actions/checkout@v5
-- uses: ALRubinger/aileron-actions/actions/setup-go-wasm@v1
+- uses: ALRubinger/aileron-actions/actions/setup-go-wasm@v0.0.1
 ```
 
 Pin by commit SHA in production for supply-chain trust:

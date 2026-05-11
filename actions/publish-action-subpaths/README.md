@@ -44,12 +44,12 @@ two files at the root: `action.md` and `signature.sig`.
 
 ```yaml
 - id: connector
-  uses: ALRubinger/aileron-actions/actions/sign-and-publish@v1
+  uses: ALRubinger/aileron-actions/actions/sign-and-publish@v0.0.1
   with:
     signing-key: ${{ secrets.AILERON_SIGNING_KEY }}
     github-token: ${{ secrets.GITHUB_TOKEN }}
 
-- uses: ALRubinger/aileron-actions/actions/publish-action-subpaths@v1
+- uses: ALRubinger/aileron-actions/actions/publish-action-subpaths@v0.0.1
   with:
     signing-key: ${{ secrets.AILERON_SIGNING_KEY }}
     github-token: ${{ secrets.GITHUB_TOKEN }}

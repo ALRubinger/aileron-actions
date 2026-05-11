@@ -56,14 +56,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: ALRubinger/aileron-actions/actions/setup-go-wasm@v1
-      - uses: ALRubinger/aileron-actions/actions/build-wasm-connector@v1
+      - uses: ALRubinger/aileron-actions/actions/setup-go-wasm@v0.0.1
+      - uses: ALRubinger/aileron-actions/actions/build-wasm-connector@v0.0.1
       - id: connector
-        uses: ALRubinger/aileron-actions/actions/sign-and-publish@v1
+        uses: ALRubinger/aileron-actions/actions/sign-and-publish@v0.0.1
         with:
           signing-key: ${{ secrets.AILERON_SIGNING_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: ALRubinger/aileron-actions/actions/publish-action-subpaths@v1
+      - uses: ALRubinger/aileron-actions/actions/publish-action-subpaths@v0.0.1
         with:
           signing-key: ${{ secrets.AILERON_SIGNING_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}

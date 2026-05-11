@@ -35,14 +35,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: ALRubinger/aileron-actions/actions/setup-go-wasm@v1
-      - uses: ALRubinger/aileron-actions/actions/build-wasm-connector@v1
+      - uses: ALRubinger/aileron-actions/actions/setup-go-wasm@v0.0.1
+      - uses: ALRubinger/aileron-actions/actions/build-wasm-connector@v0.0.1
       - id: connector
-        uses: ALRubinger/aileron-actions/actions/sign-and-publish@v1
+        uses: ALRubinger/aileron-actions/actions/sign-and-publish@v0.0.1
         with:
           signing-key: ${{ secrets.AILERON_SIGNING_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - uses: ALRubinger/aileron-actions/actions/publish-action-subpaths@v1
+      - uses: ALRubinger/aileron-actions/actions/publish-action-subpaths@v0.0.1
         with:
           signing-key: ${{ secrets.AILERON_SIGNING_KEY }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -59,8 +59,8 @@ provider-specific stays out of `aileron-actions`.
 Consumers can pin by tag or commit SHA:
 
 ```yaml
-# Tag (tracks the major version, accepts patches)
-- uses: ALRubinger/aileron-actions/actions/setup-go-wasm@v1
+# Tag (this repo currently ships patch-level tags only: v0.0.x)
+- uses: ALRubinger/aileron-actions/actions/setup-go-wasm@v0.0.1
 
 # Commit SHA (immutable; recommended for supply-chain trust)
 - uses: ALRubinger/aileron-actions/actions/setup-go-wasm@<commit-sha>
